@@ -1,0 +1,16 @@
+[
+  {
+    "inputs": [{ "internalType": "address", "name": "token", "type": "address" }],
+    "name": "assetId",
+    "outputs": [{ "internalType": "bytes32", "name": "", "type": "bytes32" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [{ "internalType": "bytes32", "name": "assetId", "type": "bytes32" }],
+    "name": "tokenAddress",
+    "outputs": [{ "internalType": "address", "name": "", "type": "address" }],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]

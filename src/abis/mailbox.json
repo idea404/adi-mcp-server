@@ -1,0 +1,17 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "txHash", "type": "bytes32" },
+      { "indexed": true, "internalType": "bytes32", "name": "txId", "type": "bytes32" },
+      { "indexed": false, "internalType": "uint256", "name": "l2GasLimit", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "l2GasPerPubdataByteLimit", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "opId", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "baseCost", "type": "uint256" },
+      { "indexed": false, "internalType": "address", "name": "l1Sender", "type": "address" },
+      { "indexed": false, "internalType": "bytes", "name": "transactionData", "type": "bytes" }
+    ],
+    "name": "NewPriorityRequest",
+    "type": "event"
+  }
+]

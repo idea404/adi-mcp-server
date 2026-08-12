@@ -1,0 +1,48 @@
+[
+  {
+    "inputs": [
+      { "internalType": "address", "name": "_l1Receiver", "type": "address" },
+      { "internalType": "address", "name": "_l2Token", "type": "address" },
+      { "internalType": "uint256", "name": "_amount", "type": "uint256" }
+    ],
+    "name": "withdraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "_chainId", "type": "uint256" },
+      { "internalType": "bytes32", "name": "_assetId", "type": "bytes32" },
+      { "internalType": "bytes", "name": "_data", "type": "bytes" }
+    ],
+    "name": "finalizeDeposit",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "_chainId", "type": "uint256" },
+      { "internalType": "bytes32", "name": "_assetId", "type": "bytes32" },
+      { "internalType": "bytes", "name": "_data", "type": "bytes" }
+    ],
+    "name": "bridgeMint",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "uint256", "name": "_chainId", "type": "uint256" },
+      { "internalType": "uint256", "name": "_l2MsgValue", "type": "uint256" },
+      { "internalType": "bytes32", "name": "_assetId", "type": "bytes32" },
+      { "internalType": "address", "name": "_originalCaller", "type": "address" },
+      { "internalType": "bytes", "name": "_data", "type": "bytes" }
+    ],
+    "name": "bridgeBurn",
+    "outputs": [{ "internalType": "bytes", "name": "_bridgeMintData", "type": "bytes" }],
+    "stateMutability": "payable",
+    "type": "function"
+  }
+]
