@@ -2,8 +2,8 @@
  * ADI Chain domain model: networks, tokens, bridges, and routing rules.
  *
  * All addresses verified against live RPC / Chainlink CCIP directory / the
- * bridge UI config (see DESIGN.md "Sources"). The deployed config differs
- * from in-repo code — this file is the source of truth for what is live.
+ * bridge UI config. The deployed config differs from in-repo code — this
+ * file is the source of truth for what is live.
  */
 
 export type NetworkId = "mainnet" | "testnet";

@@ -1,7 +1,7 @@
 /**
  * Canonical bridge execution: deposit (Direct + Two Bridges), withdrawal,
  * and claim. Encodes the exact request construction the bridge UI uses
- * (verified from the live bridge bundle, see DESIGN.md).
+ * (verified from the live bridge bundle).
  *
  * Signing: the server never holds keys. Callers pass a viem WalletClient
  * (e.g. from a private key in env, or a client-side signer).
