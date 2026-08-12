@@ -99,7 +99,7 @@ src/
   abis/         vendored ABIs (verified against live contracts)
 ```
 
-All contract addresses and ABIs were verified against live RPC, the Chainlink CCIP directory, and the bridge UI bundle (see `DESIGN.md`).
+All contract addresses and ABIs were verified against live RPC, the Chainlink CCIP directory, and the bridge UI bundle.
 
 ## License
 
