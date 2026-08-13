@@ -193,7 +193,7 @@ export const TOKENS: Record<TokenId, Token> = {
     notes: [
       "Dual nature: ERC-20 on Ethereum L1, native gas token on ADI L2.",
       "Canonical bridge converts between the two: deposit mints native, withdrawal burns native and releases ERC-20 on L1.",
-      "No CEX is confirmed to support direct ADI Network withdrawal today — withdraw as ERC-20 and bridge.",
+      "MEXC supports direct ADI Network withdrawal (confirmed 2026-08). Other CEXs: withdraw as ERC-20 and bridge.",
     ],
   },
   "USDC.e": {
