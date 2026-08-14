@@ -15,7 +15,7 @@ import l2AssetRouterAbi from "./abis/l2AssetRouter.json" with { type: "json" };
 import ntvAbi from "./abis/ntv.json" with { type: "json" };
 import nullifierAbi from "./abis/nullifier.json" with { type: "json" };
 import { DEFAULT_DEPOSIT_GAS_LIMIT, GAS_PER_PUBDATA, NETWORKS, type NetworkId } from "./domain.ts";
-import { getL2ToL1LogProof, getProviders, getWithdrawalLog } from "./providers.ts";
+import { getAddressTransactions, getL2ToL1LogProof, getProviders, getTransactionFinality, getWithdrawalLog } from "./providers.ts";
 
 export interface DepositParams {
   /** L1 token address (ADI ERC-20 or any ERC-20) */
@@ -108,7 +108,11 @@ export async function buildAdiDepositTx(
   const l2GasLimit = params.l2GasLimit ?? DEFAULT_DEPOSIT_GAS_LIMIT;
   const gasPrice = await l1.getGasPrice();
   const baseCost = await l2TransactionBaseCost(network, gasPrice, l2GasLimit);
-  const mintValue = baseCost + params.amount;
+  // Buffer the base cost: the Mailbox recomputes it with the deposit tx's
+  // actual gas price, which can exceed the estimate if the L1 base fee rises
+  // between estimation and inclusion. Excess mintValue is refunded to
+  // refundRecipient on L2, so overpaying is safe.
+  const mintValue = (baseCost * 110n) / 100n + params.amount;
 
   const data = encodeFunctionData({
     abi: bridgehubAbi,
@@ -182,9 +186,17 @@ export async function buildErc20DepositTx(
 }
 
 /**
- * Execute a canonical-bridge deposit. Approves the L1 Asset Router first if
- * allowance is insufficient, then sends the deposit. Returns the L1 tx hash
- * and the canonical L2 tx hash (parsed from the NewPriorityRequest event).
+ * Execute a canonical-bridge deposit. Approves the token-pulling contract
+ * first if allowance is insufficient, then sends the deposit. Returns the
+ * L1 tx hash and the canonical L2 tx hash (parsed from the NewPriorityRequest
+ * event).
+ *
+ * The spender that pulls the token differs by path (verified against the
+ * deployed mainnet contracts):
+ *  - ADI (native token): Bridgehub -> Native Token Vault pulls `mintValue`
+ *    (base cost + amount) from the user via transferFrom(user, NTV, mintValue).
+ *  - ERC-20 (Two Bridges): the L1 Asset Router pulls `amount` via
+ *    bridgehubDeposit -> safeTransferFrom(user, AssetRouter, amount).
  */
 export async function deposit(
   wallet: WalletClient,
@@ -195,42 +207,63 @@ export async function deposit(
   const net = NETWORKS[network];
   const isAdi = params.token.toLowerCase() === net.l1Adi.toLowerCase();
 
-  // Approval: the L1 Asset Router pulls the token (bridgeBurn via safeTransferFrom).
+  // Build the deposit tx first: the ADI approval amount is mintValue, which
+  // depends on the current L1 gas price.
+  const { tx, mintValue } = isAdi
+    ? await buildAdiDepositTx(network, params)
+    : await buildErc20DepositTx(network, params);
+
+  const spender = isAdi ? net.l1NativeTokenVault : net.l1AssetRouter;
+  const needed = isAdi ? mintValue : params.amount;
   const allowance = await l1.readContract({
     address: params.token,
     abi: erc20Abi,
     functionName: "allowance",
-    args: [params.from, net.l1AssetRouter],
+    args: [params.from, spender],
   });
   let approvalTxHash: Hex | undefined;
-  if (allowance < params.amount) {
+  if (allowance < needed) {
     const approvalHash = await wallet.writeContract({
       address: params.token,
       abi: erc20Abi,
       functionName: "approve",
-      args: [net.l1AssetRouter, params.amount],
+      args: [spender, needed],
       chain: { id: net.l1ChainId, name: net.l1Name, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [net.l1RpcUrl] } } },
-      account: params.from,
+      account: wallet.account!,
     });
     approvalTxHash = approvalHash;
+    // The deposit pulls the token via transferFrom, so it must not be sent
+    // until the approval is mined — otherwise the estimate sees the stale
+    // allowance and the deposit reverts with ERC20InsufficientAllowance.
+    await l1.waitForTransactionReceipt({ hash: approvalHash });
   }
-
-  const { tx, mintValue } = isAdi
-    ? await buildAdiDepositTx(network, params)
-    : await buildErc20DepositTx(network, params);
 
   const l1TxHash = await wallet.sendTransaction({
     to: tx.to,
     data: tx.data,
     value: tx.value,
     chain: { id: net.l1ChainId, name: net.l1Name, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [net.l1RpcUrl] } } },
-    account: params.from,
+    account: wallet.account!,
   });
 
-  // Parse the canonical L2 tx hash from the NewPriorityRequest event.
+  // Parse the canonical L2 tx hash from the Diamond's priority-request events.
+  // ADI's Mailbox emits NewPriorityRequestId(txId indexed, txHash indexed) —
+  // txHash is topics[2]. Fall back to the non-indexed NewPriorityRequest
+  // (txHash is the second 32-byte word of data) for older deployments.
   const receipt = await l1.waitForTransactionReceipt({ hash: l1TxHash });
-  const log = receipt.logs.find((l) => l.address.toLowerCase() === net.l1DiamondProxy.toLowerCase());
-  const canonicalTxHash = log ? (log.topics[1] as Hex) : "0x";
+  const diamondLogs = receipt.logs.filter((l) => l.address.toLowerCase() === net.l1DiamondProxy.toLowerCase());
+  const NEW_PRIORITY_REQUEST_ID_TOPIC = "0x779f441679936c5441b671969f37400b8c3ed0071cb47444431bf985754560df" as const;
+  const NEW_PRIORITY_REQUEST_TOPIC = "0x4531cd5795773d7101c17bdeb9f5ab7f47d7056017506f937083be5d6e77a382" as const;
+  let canonicalTxHash: Hex = "0x";
+  const idLog = diamondLogs.find((l) => l.topics[0] === NEW_PRIORITY_REQUEST_ID_TOPIC);
+  if (idLog) {
+    canonicalTxHash = idLog.topics[2] as Hex;
+  } else {
+    const reqLog = diamondLogs.find((l) => l.topics[0] === NEW_PRIORITY_REQUEST_TOPIC);
+    if (reqLog) {
+      canonicalTxHash = `0x${reqLog.data.slice(64, 128)}` as Hex;
+    }
+  }
 
   return { l1TxHash, canonicalTxHash, mintValue, approvalTxHash };
 }
@@ -334,12 +367,123 @@ export async function claimWithdrawal(
 ): Promise<Hex> {
   const { to, data } = buildClaimTx(network, params);
   const net = NETWORKS[network];
-  const account = wallet.account?.address;
-  if (!account) throw new Error("Wallet has no account");
+  if (!wallet.account) throw new Error("Wallet has no account");
   return wallet.sendTransaction({
     to,
     data,
     chain: { id: net.l1ChainId, name: net.l1Name, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [net.l1RpcUrl] } } },
-    account,
+    account: wallet.account,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Withdrawal discovery (stateless) — everything is derived from chain state:
+// Blockscout tx history, the finality RPC, and the L1 Nullifier's
+// isWithdrawalFinalized mapping. The server keeps no state.
+// ---------------------------------------------------------------------------
+
+export const WITHDRAW_METHOD_ID = "0x51cff8d9" as const; // L2 Base Token withdraw(address)
+
+const nullifierViewAbi = parseAbi([
+  "function isWithdrawalFinalized(uint256 _chainId, uint256 _l2BatchNumber, uint256 _l2MessageIndex) view returns (bool)",
+] as const);
+
+/** Whether finalizeDeposit was already called on the L1 Nullifier for these params. */
+export async function checkWithdrawalFinalized(network: NetworkId, params: WithdrawalParams): Promise<boolean> {
+  const { l1 } = getProviders(network);
+  const net = NETWORKS[network];
+  return (await l1.readContract({
+    address: net.l1Nullifier,
+    abi: nullifierViewAbi,
+    functionName: "isWithdrawalFinalized",
+    args: [BigInt(net.chainId), params.l2BatchNumber, params.l2MessageIndex],
+  })) as boolean;
+}
+
+/** Claim status of a withdrawal, read from the L1 Nullifier. */
+export interface WithdrawalClaimStatus {
+  /** finalizeDeposit has been called on L1 — the withdrawal is claimed */
+  finalized: boolean;
+  /** whether the batch executed on L1 yet (proof available) */
+  claimable: boolean;
+}
+
+/**
+ * Claim status for a withdrawal tx: claimable once the batch executed on L1,
+ * finalized once finalizeDeposit was called on the Nullifier.
+ * Returns null if the withdrawal tx has no finality record yet.
+ */
+export async function getWithdrawalStatus(
+  network: NetworkId,
+  txHash: Hex,
+): Promise<(WithdrawalClaimStatus & { stage: string; blockNumber: number | null; batchNumber: number | null }) | null> {
+  const finality = await getTransactionFinality(network, txHash);
+  if (!finality) return null;
+  try {
+    const params = await getWithdrawalParams(network, txHash);
+    return { ...finality, finalized: await checkWithdrawalFinalized(network, params), claimable: true };
+  } catch (e) {
+    // Only the "batch not executed on L1 yet" case means not-claimable.
+    // Any other failure (RPC errors, missing logs) must surface, not be
+    // misreported as "not claimable".
+    if (e instanceof Error && e.message.includes("not been executed on L1")) {
+      return { ...finality, finalized: false, claimable: false };
+    }
+    throw e;
+  }
+}
+
+/** A withdrawal discovered from an address's tx history, with claim status. */
+export interface WithdrawalRecord {
+  txHash: Hex;
+  amount: string; // wei
+  blockNumber: string;
+  timeStamp: string;
+  stage: string;
+  claimable: boolean;
+  finalized: boolean;
+  params: WithdrawalParams | null;
+}
+
+/**
+ * List an address's pending/finalized L2→L1 withdrawals, newest first.
+ * Stateless: filters the address's L2 tx history (Blockscout) for L2 Base
+ * Token withdraw() calls, then annotates each with finality + claim status.
+ */
+export async function listWithdrawals(
+  network: NetworkId,
+  address: Address,
+  offset = 50,
+): Promise<WithdrawalRecord[]> {
+  const txs = await getAddressTransactions(network, address, offset);
+  const net = NETWORKS[network];
+  const l2BaseToken = net.l2BaseToken.toLowerCase();
+  const records: WithdrawalRecord[] = [];
+  for (const tx of txs) {
+    // L2 Base Token withdraw(address) — skip L1-originated (deposit) rows.
+    if ((tx.to ?? "").toLowerCase() !== l2BaseToken) continue;
+    if (!(tx.input ?? "0x").toLowerCase().startsWith(WITHDRAW_METHOD_ID)) continue;
+    if (tx.isL1Originated === "1") continue;
+    const hash = tx.hash as Hex;
+    const status = await getWithdrawalStatus(network, hash);
+    let params: WithdrawalParams | null = null;
+    if (status?.claimable) {
+      try {
+        params = await getWithdrawalParams(network, hash);
+      } catch {
+        params = null;
+      }
+    }
+    records.push({
+      txHash: hash,
+      amount: tx.value,
+      blockNumber: tx.blockNumber,
+      timeStamp: tx.timeStamp,
+      stage: status?.stage ?? "pending",
+      claimable: status?.claimable ?? false,
+      finalized: status?.finalized ?? false,
+      params,
+    });
+  }
+  return records;
 }

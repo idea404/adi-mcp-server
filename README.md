@@ -49,6 +49,7 @@ Add to your MCP client (Claude Desktop, Cursor, `.mcp.json`, …):
 | `get_finality_status` | Node finality frontiers |
 | `estimate_deposit` | L1 base cost of a canonical bridge deposit (in ADI) |
 | `get_withdrawal_params` | Claim params for a withdrawal: batch, message index, message, Merkle proof |
+| `list_withdrawals` | An address's L2→L1 withdrawals with claim status: stage, claimable (batch executed on L1), finalized (already claimed). Stateless — derived from on-chain state |
 | `get_agent_profile` | ERC-8004 agent identity + reputation + validation (mainnet) |
 
 ### Advisory
@@ -62,9 +63,9 @@ Add to your MCP client (Claude Desktop, Cursor, `.mcp.json`, …):
 
 | Tool | What it does |
 |---|---|
-| `bridge_deposit` | Canonical bridge deposit: ADI ERC-20 (L1) → native ADI (L2). Approves the L1 Asset Router, deposits, returns L1 + canonical L2 tx hashes |
+| `bridge_deposit` | Canonical bridge deposit: ADI ERC-20 (L1) → native ADI (L2). Approves the Native Token Vault (ADI) or Asset Router (ERC-20), deposits, returns L1 + canonical L2 tx hashes |
 | `bridge_withdraw` | L2 → L1 withdrawal (native ADI or bridged ERC-20). ~75 min + claim |
-| `claim_withdrawal` | Claim a finalized withdrawal on L1 via the Nullifier (params from `get_withdrawal_params` or rebuilt from the tx hash) |
+| `claim_withdrawal` | Claim a finalized withdrawal on L1 via the Nullifier (params from `get_withdrawal_params`/`list_withdrawals`, or the tx hash to rebuild). Skips already-claimed withdrawals |
 | `ccip_transfer` | CCIP token transfer (USDC.e, LINK on mainnet; CCIP-BnM on testnet) |
 
 ## Known constraints (encoded in the domain model)

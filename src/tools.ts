@@ -6,9 +6,9 @@
 
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { formatEther, formatUnits, isAddress, parseUnits, type Account, type Address, type Hex, type WalletClient } from "viem";
+import { formatEther, formatGwei, formatUnits, isAddress, parseUnits, type Account, type Address, type Hex, type WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { createWalletClient, http } from "viem";
+import { createWalletClient, fallback, http } from "viem";
 import {
   BRIDGES,
   CCIP_LANES,
@@ -20,8 +20,8 @@ import {
   type TokenId,
 } from "./domain.ts";
 import { bridgeOptionsFor, planFundingPath } from "./routing.ts";
-import { getFinalityStatus, getNativeBalance, getProviders, getTokenBalance, getTransactionFinality } from "./providers.ts";
-import { buildAdiDepositTx, buildAdiWithdrawTx, buildErc20DepositTx, buildErc20WithdrawTx, claimWithdrawal, deposit, getWithdrawalParams, l2TransactionBaseCost } from "./bridge.ts";
+import { getFinalityStatus, getNativeBalance, getProviders, getTokenBalance, getTransactionFinality, L1_RPC_FALLBACKS } from "./providers.ts";
+import { buildAdiDepositTx, buildAdiWithdrawTx, buildErc20DepositTx, buildErc20WithdrawTx, checkWithdrawalFinalized, claimWithdrawal, deposit, getWithdrawalParams, getWithdrawalStatus, l2TransactionBaseCost, listWithdrawals } from "./bridge.ts";
 import { buildCcipSendTx, ccipSend } from "./ccip.ts";
 import { getAgentProfile } from "./erc8004.ts";
 
@@ -59,7 +59,7 @@ export function l1WalletFor(network: NetworkId, account: Account): WalletClient 
   return createWalletClient({
     account,
     chain: { id: net.l1ChainId, name: net.l1Name, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [net.l1RpcUrl] } } },
-    transport: http(net.l1RpcUrl),
+    transport: fallback([http(net.l1RpcUrl), ...L1_RPC_FALLBACKS[network].map((url) => http(url))]),
   });
 }
 
@@ -180,6 +180,17 @@ export function registerTools(server: McpServer, account: Account | undefined): 
     { tx_hash: z.string().describe("L2 transaction hash"), network: networkSchema },
     async ({ tx_hash, network }) => {
       const f = await getTransactionFinality(network, tx_hash as Hex);
+      if (!f) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({
+            txHash: tx_hash,
+            stage: "not-found",
+            blockNumber: null,
+            batchNumber: null,
+            meaning: "No finality record for this hash on ADI Chain. Canonical (priority) tx hashes from bridge_deposit are L1-side identifiers, not L2 tx hashes — query the L2 tx hash instead, or wait for the deposit to be processed.",
+          }, null, 2) }],
+        };
+      }
       return {
         content: [{ type: "text", text: JSON.stringify({
           txHash: tx_hash,
@@ -279,7 +290,7 @@ export function registerTools(server: McpServer, account: Account | undefined): 
   if (account) {
     server.tool(
       "bridge_deposit",
-      "Canonical bridge deposit: ADI ERC-20 (L1) → native ADI (L2), or any ERC-20 via the Two Bridges pattern. Approves the L1 Asset Router, then deposits. Returns the L1 tx hash and canonical L2 tx hash.",
+      "Canonical bridge deposit: ADI ERC-20 (L1) → native ADI (L2), or any ERC-20 via the Two Bridges pattern. Approves the token-pulling contract (Native Token Vault for ADI, Asset Router for ERC-20), then deposits. Returns the L1 tx hash and canonical L2 tx hash.",
       {
         network: networkSchema,
         token: z.string().describe("L1 token address (ADI ERC-20 or any ERC-20)"),
@@ -331,12 +342,13 @@ export function registerTools(server: McpServer, account: Account | undefined): 
         } else {
           tx = await buildErc20WithdrawTx(network, t.l2Address, wei, l1_receiver as Address);
         }
-        const txHash = await walletFor(network, account).sendTransaction({
+        const wallet = walletFor(network, account);
+        const txHash = await wallet.sendTransaction({
           to: tx.to,
           data: tx.data,
           value: tx.value,
           chain: { id: net.chainId, name: net.name, nativeCurrency: { name: "ADI", symbol: "ADI", decimals: 18 }, rpcUrls: { default: { http: [net.rpcUrl] } } },
-          account: account.address,
+          account: wallet.account!,
         });
         return {
           content: [{ type: "text", text: JSON.stringify({
@@ -369,7 +381,7 @@ export function registerTools(server: McpServer, account: Account | undefined): 
           token: t.l2Address,
           amount: wei,
           receiver: receiver as Address,
-        }, account.address);
+        });
         return {
           content: [{ type: "text", text: JSON.stringify({
             txHash: result.txHash,
@@ -390,7 +402,7 @@ export function registerTools(server: McpServer, account: Account | undefined): 
       const gasPrice = await l1.getGasPrice();
       const gasLimit = l2_gas_limit ? BigInt(l2_gas_limit) : 1_000_000n;
       const baseCost = await l2TransactionBaseCost(network, gasPrice, gasLimit);
-      return { content: [{ type: "text", text: `Estimated L1 base cost: ${formatEther(baseCost)} ADI (gas price ${formatEther(gasPrice)} gwei, gas limit ${gasLimit})` }] };
+      return { content: [{ type: "text", text: `Estimated L1 base cost: ${formatEther(baseCost)} ADI (gas price ${formatGwei(gasPrice)} gwei, gas limit ${gasLimit})` }] };
     },
   );
 
@@ -409,6 +421,40 @@ export function registerTools(server: McpServer, account: Account | undefined): 
           l2TxNumberInBatch: params.l2TxNumberInBatch,
           message: params.message,
           merkleProof: params.merkleProof,
+        }, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    "list_withdrawals",
+    "List an address's L2→L1 withdrawals (newest first) with their claim status: stage (pending/committed/executed), claimable (batch executed on L1, proof available), and finalized (already claimed via the Nullifier). Stateless — derived from on-chain state.",
+    { address: z.string().describe("L2 address to inspect"), network: networkSchema, limit: z.number().int().min(1).max(200).optional().describe("max tx history rows to scan (default 50)") },
+    async ({ address, network, limit }) => {
+      if (!isAddress(address)) return { content: [{ type: "text", text: `Invalid address: ${address}` }] };
+      const records = await listWithdrawals(network, address as Address, limit ?? 50);
+      return {
+        content: [{ type: "text", text: JSON.stringify({
+          address,
+          network: NETWORKS[network].name,
+          count: records.length,
+          withdrawals: records.map((r) => ({
+            txHash: r.txHash,
+            amount: formatEther(BigInt(r.amount)),
+            blockNumber: r.blockNumber,
+            stage: r.stage,
+            claimable: r.claimable,
+            finalized: r.finalized,
+            params: r.params ? {
+              chainId: r.params.chainId.toString(),
+              l2BatchNumber: r.params.l2BatchNumber.toString(),
+              l2MessageIndex: r.params.l2MessageIndex.toString(),
+              l2Sender: r.params.l2Sender,
+              l2TxNumberInBatch: r.params.l2TxNumberInBatch,
+              message: r.params.message,
+              merkleProof: r.params.merkleProof,
+            } : null,
+          })),
         }, null, 2) }],
       };
     },
@@ -443,6 +489,12 @@ export function registerTools(server: McpServer, account: Account | undefined): 
           params = await getWithdrawalParams(network, tx_hash as Hex);
         } else {
           return { content: [{ type: "text", text: "Provide either tx_hash or params" }] };
+        }
+        if (await checkWithdrawalFinalized(network, params)) {
+          return { content: [{ type: "text", text: JSON.stringify({
+            status: "already-claimed",
+            note: "This withdrawal was already finalized on L1 — finalizeDeposit has been called. The tokens have been released to the L1 receiver.",
+          }, null, 2) }] };
         }
         const txHash = await claimWithdrawal(l1WalletFor(network, account), network, params);
         return {

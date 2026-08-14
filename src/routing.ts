@@ -75,7 +75,7 @@ export function planFundingPath(
       rank: 1,
       steps: [
         { action: "Acquire ADI ERC-20 on Ethereum", detail: "Buy on KuCoin/Kraken/Crypto.com and withdraw as ERC-20 (Ethereum network). MEXC supports direct ADI Network withdrawal (confirmed 2026-08).", time: "minutes" },
-        { action: "Approve + deposit via canonical bridge", detail: `Approve the L1 Asset Router (${net.l1AssetRouter}) to spend ADI, then call requestL2TransactionDirect on Bridgehub (${net.bridgehub}).`, bridge: "canonical", time: "~15 seconds" },
+        { action: "Approve + deposit via canonical bridge", detail: `Approve the Native Token Vault (${net.l1NativeTokenVault}) to spend ADI, then call requestL2TransactionDirect on Bridgehub (${net.bridgehub}).`, bridge: "canonical", time: "~15 seconds" },
         { action: "Receive native ADI", detail: "ADI arrives as native gas token on ADI Chain L2.", time: "~15 seconds" },
       ],
       cost: "CEX withdrawal fee + L1 gas + L2 gas (paid in ADI)",

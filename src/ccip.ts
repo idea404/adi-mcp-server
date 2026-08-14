@@ -60,7 +60,6 @@ export function buildCcipSendTx(params: CcipSendParams): { to: Address; data: He
 export async function ccipSend(
   wallet: WalletClient,
   params: CcipSendParams,
-  from: Address,
 ): Promise<{ txHash: Hex; messageId: Hex }> {
   const { l2 } = getProviders(params.network);
   const net = NETWORKS[params.network];
@@ -71,7 +70,7 @@ export async function ccipSend(
     data,
     value,
     chain: { id: net.chainId, name: net.name, nativeCurrency: { name: "ADI", symbol: "ADI", decimals: 18 }, rpcUrls: { default: { http: [net.rpcUrl] } } },
-    account: from,
+    account: wallet.account!,
   });
 
   const receipt = await l2.waitForTransactionReceipt({ hash: txHash });

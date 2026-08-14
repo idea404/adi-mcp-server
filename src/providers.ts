@@ -3,13 +3,19 @@
  * Blockscout v1 API client (module/action endpoints on explorer-api.* hosts).
  */
 
-import { createPublicClient, http, type PublicClient } from "viem";
+import { createPublicClient, fallback, http, type PublicClient } from "viem";
 import { NETWORKS, type NetworkId } from "./domain.ts";
 
 export interface Providers {
   l1: PublicClient;
   l2: PublicClient;
 }
+
+/** Ethereum L1 RPC fallbacks (used when the primary L1 RPC is down). */
+export const L1_RPC_FALLBACKS: Record<NetworkId, string[]> = {
+  mainnet: ["https://eth.drpc.org", "https://1rpc.io/eth"],
+  testnet: ["https://eth-sepolia.publicnode.com", "https://eth-sepolia.drpc.org"],
+};
 
 const clients: Record<NetworkId, Providers | undefined> = { mainnet: undefined, testnet: undefined };
 
@@ -18,7 +24,10 @@ export function getProviders(network: NetworkId): Providers {
   if (existing) return existing;
   const net = NETWORKS[network];
   const providers: Providers = {
-    l1: createPublicClient({ chain: { id: net.l1ChainId, name: net.l1Name, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [net.l1RpcUrl] } } }, transport: http(net.l1RpcUrl) }),
+    l1: createPublicClient({
+      chain: { id: net.l1ChainId, name: net.l1Name, nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [net.l1RpcUrl] } } },
+      transport: fallback([http(net.l1RpcUrl), ...L1_RPC_FALLBACKS[network].map((url) => http(url))]),
+    }),
     l2: createPublicClient({ chain: { id: net.chainId, name: net.name, nativeCurrency: { name: "ADI", symbol: "ADI", decimals: 18 }, rpcUrls: { default: { http: [net.rpcUrl] } } }, transport: http(net.rpcUrl) }),
   };
   clients[network] = providers;
@@ -151,4 +160,28 @@ export function getTokenBalance(
 /** Native balance via Blockscout. */
 export function getNativeBalance(network: NetworkId, address: `0x${string}`): Promise<string> {
   return blockscoutV1(network, "account", "balance", { address });
+}
+
+/** Blockscout account/txlist row (v1 API). */
+export interface BlockscoutTx {
+  hash: string;
+  nonce: string;
+  from: string;
+  to: string;
+  value: string;
+  input: string;
+  txreceipt_status: string;
+  blockNumber: string;
+  timeStamp: string;
+  isL1Originated?: string;
+  functionName?: string;
+}
+
+/** Latest confirmed transactions from an address, newest first. */
+export function getAddressTransactions(
+  network: NetworkId,
+  address: `0x${string}`,
+  offset = 50,
+): Promise<BlockscoutTx[]> {
+  return blockscoutV1(network, "account", "txlist", { address, startblock: "0", endblock: "99999999", page: "1", offset: String(offset), sort: "desc" });
 }
