@@ -1,6 +1,6 @@
 {
   "name": "adi-mcp-server",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "MCP server for ADI Chain: canonical bridge, CCIP, and network tools for AI agents",
   "type": "module",
   "bin": {
