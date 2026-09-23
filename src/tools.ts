@@ -24,6 +24,7 @@ import { getFinalityStatus, getNativeBalance, getProviders, getTokenBalance, get
 import { buildAdiDepositTx, buildAdiWithdrawTx, buildErc20DepositTx, buildErc20WithdrawTx, checkWithdrawalFinalized, claimWithdrawal, deposit, getWithdrawalParams, getWithdrawalStatus, l2TransactionBaseCost, listWithdrawals } from "./bridge.ts";
 import { buildCcipSendTx, ccipSend } from "./ccip.ts";
 import { getAgentProfile } from "./erc8004.ts";
+import { assertAddress, assertCanonicalToken, assertCcipToken, assertDestinationSelector, assertNetworkCapability, parsePositiveAmount } from "./policy.ts";
 
 const networkSchema = z.enum(["mainnet", "testnet"]).default("mainnet");
 
@@ -298,10 +299,13 @@ export function registerTools(server: McpServer, account: Account | undefined): 
         to: z.string().describe("L2 recipient address"),
       },
       async ({ network, token, amount, to }) => {
-        if (!isAddress(token) || !isAddress(to)) return { content: [{ type: "text", text: "Invalid address" }] };
+        assertNetworkCapability(network, "canonicalDeposit");
+        assertAddress(token, "token");
+        assertAddress(to, "recipient");
         const t = resolveToken(token, network);
-        const decimals = t ? t.decimals : 18;
-        const wei = parseUnits(amount, decimals);
+        if (!t) throw new Error("Token is not configured for the canonical bridge");
+        assertCanonicalToken(network, t);
+        const wei = parsePositiveAmount(amount, t.decimals);
         const result = await deposit(l1WalletFor(network, account), network, {
           token: token as Address,
           amount: wei,
@@ -330,10 +334,12 @@ export function registerTools(server: McpServer, account: Account | undefined): 
         l1_receiver: z.string().describe("L1 (Ethereum) receiver address"),
       },
       async ({ network, token, amount, l1_receiver }) => {
-        if (!isAddress(l1_receiver)) return { content: [{ type: "text", text: "Invalid L1 receiver" }] };
+        assertNetworkCapability(network, "canonicalWithdraw");
+        assertAddress(l1_receiver, "L1 receiver");
         const t = resolveToken(token, network);
         if (!t) return { content: [{ type: "text", text: `Unknown token: ${token}` }] };
-        const wei = parseUnits(amount, t.decimals);
+        assertCanonicalToken(network, t);
+        const wei = parsePositiveAmount(amount, t.decimals);
         const net = NETWORKS[network];
         let tx: { to: Address; data: Hex; value: bigint };
         if (t.isNative) {
@@ -370,14 +376,22 @@ export function registerTools(server: McpServer, account: Account | undefined): 
         receiver: z.string().describe("Receiver address on the destination chain"),
       },
       async ({ network, token, amount, destination_chain_selector, receiver }) => {
+        assertNetworkCapability(network, "ccip");
         const t = resolveToken(token, network);
         if (!t) return { content: [{ type: "text", text: `Unknown token: ${token}` }] };
-        if (!t.bridges.includes("ccip")) return { content: [{ type: "text", text: `${t.symbol} has no CCIP pool on ADI — cannot be sent via CCIP.` }] };
-        if (!isAddress(receiver)) return { content: [{ type: "text", text: "Invalid receiver" }] };
-        const wei = parseUnits(amount, t.decimals);
+        assertCcipToken(network, t);
+        assertAddress(receiver, "receiver");
+        let selector: bigint;
+        try {
+          selector = BigInt(destination_chain_selector);
+        } catch {
+          throw new Error("Invalid CCIP destination chain selector");
+        }
+        assertDestinationSelector(network, selector);
+        const wei = parsePositiveAmount(amount, t.decimals);
         const result = await ccipSend(walletFor(network, account), {
           network,
-          destinationChainSelector: BigInt(destination_chain_selector),
+          destinationChainSelector: selector,
           token: t.l2Address,
           amount: wei,
           receiver: receiver as Address,
@@ -470,6 +484,8 @@ export function registerTools(server: McpServer, account: Account | undefined): 
         params: z.string().optional().describe("JSON params from get_withdrawal_params (alternative to tx_hash)"),
       },
       async ({ network, tx_hash, params: paramsJson }) => {
+        assertNetworkCapability(network, "claim");
+        if (tx_hash && paramsJson) throw new Error("Provide exactly one of tx_hash or params");
         let params;
         if (paramsJson) {
           const parsed = JSON.parse(paramsJson) as {
