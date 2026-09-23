@@ -68,34 +68,97 @@ export function getFinalityStatus(network: NetworkId): Promise<{
   return zksCall(network, "zks_getFinalityStatus", []);
 }
 
-/** zks_getL2ToL1LogProof — Merkle proof for an L2→L1 log; null until the batch executes on L1. */
-export function getL2ToL1LogProof(
+/**
+ * zks_getL2ToL1LogProof — Merkle proof for an L2→L1 log; null until the batch
+ * executes on L1.
+ *
+ * The ADI node has returned both snake_case (`batch_number`) and camelCase
+ * (`batchNumber`) field names across versions, so accept either.
+ */
+export async function getL2ToL1LogProof(
   network: NetworkId,
   txHash: `0x${string}`,
   logIndex: number,
-): Promise<{ id: number; batch_number: number; proof: `0x${string}`[]; root: `0x${string}` } | null> {
-  return zksCall(network, "zks_getL2ToL1LogProof", [txHash, logIndex]);
+): Promise<{ id: number; batchNumber: number; proof: `0x${string}`[]; root: `0x${string}` } | null> {
+  const raw = await zksCall<{
+    id: number;
+    batch_number?: number;
+    batchNumber?: number;
+    proof: `0x${string}`[];
+    root: `0x${string}`;
+  } | null>(network, "zks_getL2ToL1LogProof", [txHash, logIndex]);
+  if (!raw) return null;
+  const batchNumber = raw.batchNumber ?? raw.batch_number;
+  if (batchNumber === undefined) {
+    throw new Error(`RPC zks_getL2ToL1LogProof: missing batch number for ${txHash}`);
+  }
+  return { id: raw.id, batchNumber, proof: raw.proof, root: raw.root };
 }
 
 /** L1MessageSent event topic (L1 Messenger, 0x8008). */
 export const L1_MESSAGE_SENT_TOPIC = "0x3a36e47291f4201faf137fab081d92295bce2d53be2c6ca68ba82c7faa9ce241" as const;
 
+/**
+ * An L2→L1 log as it appears in a zkSync-style receipt's `l2ToL1Logs`.
+ * The ADI node has used both snake_case and camelCase field names across
+ * versions, so every field is optional here and normalized on read.
+ */
 export interface L2ToL1Log {
-  l2_shard_id: number;
-  is_service: boolean;
-  tx_number_in_block: number;
+  l2_shard_id?: number;
+  l2ShardId?: number;
+  is_service?: boolean;
+  isService?: boolean;
+  tx_number_in_block?: number;
+  transactionIndex?: number | string;
   sender: `0x${string}`;
   key: `0x${string}`;
   value: `0x${string}`;
 }
 
+/** Normalize a receipt's L2→L1 log across node field-name variants. */
+export function normalizeL2ToL1Log(log: L2ToL1Log): {
+  shardId: number;
+  isService: boolean;
+  txNumberInBatch: number;
+  sender: `0x${string}`;
+  key: `0x${string}`;
+  value: `0x${string}`;
+} {
+  // `txNumberInBatch` is hashed into the proof leaf, so it must be the L2
+  // transaction's index within its batch — the receipt's transactionIndex.
+  const txNumber =
+    log.tx_number_in_block ??
+    (log.transactionIndex === undefined ? undefined : Number(typeof log.transactionIndex === "string" ? BigInt(log.transactionIndex) : log.transactionIndex));
+  if (txNumber === undefined) {
+    throw new Error("L2→L1 log is missing a transaction index (tx_number_in_block / transactionIndex)");
+  }
+  return {
+    shardId: log.l2_shard_id ?? log.l2ShardId ?? 0,
+    isService: log.is_service ?? log.isService ?? false,
+    txNumberInBatch: txNumber,
+    sender: log.sender,
+    key: log.key,
+    value: log.value,
+  };
+}
+
 export interface WithdrawalLog {
   /** L1MessageSent log from the L1 Messenger (0x8008) */
   log: { topics: `0x${string}`[]; data: `0x${string}` };
-  /** matching L2→L1 log (sender = 0x8008) */
-  l2ToL1Log: L2ToL1Log;
+  /** matching L2→L1 log (sender = 0x8008), normalized across node field names */
+  l2ToL1Log: NormalizedL2ToL1Log;
   /** index of the L2→L1 log in the receipt's l2ToL1Logs array */
   l2ToL1LogIndex: number;
+}
+
+export interface NormalizedL2ToL1Log {
+  shardId: number;
+  isService: boolean;
+  /** the L2 transaction's index within its batch; hashed into the proof leaf */
+  txNumberInBatch: number;
+  sender: `0x${string}`;
+  key: `0x${string}`;
+  value: `0x${string}`;
 }
 
 /**
@@ -122,7 +185,11 @@ export async function getWithdrawalLog(network: NetworkId, txHash: `0x${string}`
     .filter(({ l }) => l.sender.toLowerCase() === messenger);
   const entry = entries[index];
   if (!entry) throw new Error(`No matching L2→L1 log found for ${txHash} (index ${index})`);
-  return { log: { topics: log.topics as `0x${string}`[], data: log.data }, l2ToL1Log: entry.l, l2ToL1LogIndex: entry.i };
+  return {
+    log: { topics: log.topics as `0x${string}`[], data: log.data },
+    l2ToL1Log: normalizeL2ToL1Log(entry.l),
+    l2ToL1LogIndex: entry.i,
+  };
 }
 
 /** Blockscout v1 API client (module/action). */

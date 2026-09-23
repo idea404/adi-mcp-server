@@ -1,13 +1,22 @@
 import { isAddress, parseUnits, type Address } from "viem";
-import { NETWORKS, type NetworkId, type Token } from "./domain.ts";
+import { CCIP_LANES, NETWORKS, type NetworkId, type Token } from "./domain.ts";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 export type NetworkCapability = "canonicalDeposit" | "canonicalWithdraw" | "claim" | "ccip";
 
-const NETWORK_CAPABILITIES: Record<NetworkId, Set<NetworkCapability>> = {
-  mainnet: new Set(["canonicalDeposit", "canonicalWithdraw", "claim", "ccip"]),
-  testnet: new Set(["ccip"]),
+/**
+ * Capabilities the MCP may exercise per network.
+ *
+ * Testnet is intentionally limited to CCIP: the canonical bridge and the L1
+ * Nullifier are not published on Sepolia (their addresses are 0x0 in the
+ * domain model), so a deposit, withdrawal, or claim there would target a
+ * nonexistent contract. Failing closed here gives a clear error instead of a
+ * confusing on-chain revert.
+ */
+const NETWORK_CAPABILITIES: Record<NetworkId, Partial<Record<NetworkCapability, true>>> = {
+  mainnet: { canonicalDeposit: true, canonicalWithdraw: true, claim: true, ccip: true },
+  testnet: { ccip: true },
 };
 
 export function isZeroAddress(value: string): boolean {
@@ -15,7 +24,7 @@ export function isZeroAddress(value: string): boolean {
 }
 
 export function assertNetworkCapability(network: NetworkId, capability: NetworkCapability): void {
-  if (!NETWORK_CAPABILITIES[network].has(capability)) {
+  if (!NETWORK_CAPABILITIES[network][capability]) {
     throw new Error(`${capability} is not supported on ${NETWORKS[network].name}`);
   }
 }
@@ -43,9 +52,15 @@ export function assertCanonicalToken(network: NetworkId, token: Token): void {
   }
 }
 
+/**
+ * CCIP token support is read from the domain model's lane table
+ * (`CCIP_LANES[network]`) — the documented source of truth for which tokens
+ * move on which lanes. Adding a lane or token there is enough; this check
+ * must not hardcode its own copy of that list.
+ */
 export function assertCcipToken(network: NetworkId, token: Token): void {
-  const supported = network === "testnet" ? token.id === "CCIP-BnM" : token.id === "USDC.e" || token.id === "LINK";
-  if (!supported || !token.bridges.includes("ccip")) {
+  const laneTokens = Object.values(CCIP_LANES[network]).flat();
+  if (!laneTokens.includes(token.id) || !token.bridges.includes("ccip")) {
     throw new Error(`${token.symbol} is not supported by CCIP on ${NETWORKS[network].name}`);
   }
 }

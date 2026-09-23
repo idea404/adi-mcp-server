@@ -335,10 +335,10 @@ export async function getWithdrawalParams(network: NetworkId, txHash: Hex, index
   const l2Sender = ("0x" + l2ToL1Log.key.slice(26)) as Address;
   return {
     chainId: BigInt(NETWORKS[network].chainId),
-    l2BatchNumber: BigInt(proof.batch_number),
+    l2BatchNumber: BigInt(proof.batchNumber),
     l2MessageIndex: BigInt(proof.id),
     l2Sender,
-    l2TxNumberInBatch: l2ToL1Log.tx_number_in_block,
+    l2TxNumberInBatch: l2ToL1Log.txNumberInBatch,
     message,
     merkleProof: proof.proof,
   };
